@@ -1,0 +1,14 @@
+{
+    "apps": [
+        {
+            "name": "Gate-Matrix-Bot",
+            "script": "yarn start",
+            "args": "",
+            "autorestart": true,
+            "log_date_format": "HH:mm:ss",
+            "watch": false,
+            "ignore_watch": [".git", ".yarn", "temp", "data", "node_modules"],
+            "max_memory_restart": "1000M"
+        }
+    ]
+}

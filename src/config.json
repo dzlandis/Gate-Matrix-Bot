@@ -1,0 +1,9 @@
+{
+    "homeserverUrl": "https://matrix.org",
+    "usersWithPerms": ["@dzlandis:mozilla.org", "@dzlandis:matrix.org"],
+    "prefix": "!gate",
+    "autoJoin": true,
+    "dataPath": "dist/storage",
+    "developerMode": false,
+    "encryption": false
+}
