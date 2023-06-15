@@ -1,4 +1,12 @@
-import { LogService, MatrixClient, MembershipEvent, MentionPill, MessageEvent, UserID } from 'matrix-bot-sdk';
+import {
+  LogService,
+  MatrixClient,
+  MembershipEvent,
+  MentionPill,
+  MessageEvent,
+  RoomEvent,
+  UserID
+} from 'matrix-bot-sdk';
 import { runHelpCommand } from './commands/help.js';
 import { runPingCommand } from './commands/ping.js';
 import { runSpaceCommand } from './commands/space.js';
@@ -26,6 +34,7 @@ export default class CommandHandler {
     // Set up the event handler
     this.client.on('room.message', this.onMessage.bind(this));
     this.client.on('room.event', this.onRoomEvent.bind(this));
+    this.client.on('room.join', this.onRoomJoin.bind(this));
   }
 
   private async prepareProfile() {
@@ -39,6 +48,16 @@ export default class CommandHandler {
       // Non-fatal error - we'll just log it and move on.
       LogService.warn('CommandHandler', e);
     }
+  }
+
+  private async onRoomJoin(roomId: string, ev: any) {
+    const event = new MembershipEvent(ev);
+    if (event.sender !== this.userId) return;
+    const roomCreateEventRaw = await this.client.getRoomStateEvent(roomId, 'm.room.create', undefined);
+    if (!roomCreateEventRaw) return;
+    const roomCreateEvent = new RoomEvent(roomCreateEventRaw);
+    if (roomCreateEvent.type === 'm.space')
+      await this.client.leaveRoom(roomId, 'Spaces are not currently supported. Please invite to a room instead!');
   }
 
   private async onMessage(roomId: string, ev: any) {
