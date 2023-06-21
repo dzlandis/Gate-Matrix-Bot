@@ -102,6 +102,11 @@ export default class CommandHandler {
   }
 
   private async onRoomEvent(mainRoomId: string, ev: any) {
+    if (ev.content.membership === 'leave') {
+      const roomMembersCount = (await this.client.getRoomMembers(mainRoomId)).length;
+      if (roomMembersCount <= 2) await this.client.leaveRoom(mainRoomId);
+      return;
+    }
     if (this.verificationRooms.has(mainRoomId)) return;
     const mainRoomEvent = new MembershipEvent(ev);
     if (mainRoomEvent.type !== 'm.room.member') return;
@@ -163,15 +168,27 @@ export default class CommandHandler {
 
     const mainRoomPill = await MentionPill.forRoom(mainRoomId, this.client);
 
-    const verificationRoomId = await this.client.createRoom({
-      name: `Verification | ${mainRoomAlias}`,
-      invite: [mainRoomEvent.sender],
-      is_direct: true,
-      power_level_content_override: {
-        invite: 100
-      }
-    });
+    const verificationRoomId = await this.client
+      .createRoom({
+        name: `Verification | ${mainRoomAlias}`,
+        is_direct: true,
+        power_level_content_override: {
+          invite: 100
+        }
+      })
+      .catch(e => {
+        LogService.error('verification-room', e);
+      });
     // const verificationRoomId = await this.client.dms.getOrCreateDm(mainRoomEvent.sender);
+    if (!verificationRoomId)
+      return LogService.error('verification-room', 'A verification room was not created and so it does not exist.');
+
+    const inviteUserSuccess = await this.client.inviteUser(mainRoomEvent.sender, verificationRoomId).catch(async e => {
+      LogService.error('unable-to-invite-user-to-room', e);
+      await this.client.leaveRoom(verificationRoomId);
+      return false;
+    });
+    if (inviteUserSuccess === false) return;
 
     this.verificationRooms.add(verificationRoomId);
 
