@@ -8,16 +8,20 @@ import {
   RoomEvent,
   UserID
 } from 'matrix-bot-sdk';
+import mongoose from 'mongoose';
 import svgCaptcha from 'svg-captcha';
 import svg2png from 'svg2png';
 import { runHelpCommand } from './commands/help.js';
 import { runPingCommand } from './commands/ping.js';
 import { runSpaceCommand } from './commands/space.js';
 import config from './lib/config.js';
+import { model as verifyingData } from './lib/schemas/verifying.js';
 
 // The prefix required to trigger the bot. The bot will also respond
 // to being pinged directly.
 export const COMMAND_PREFIX = config.prefix ?? '!gate';
+
+await mongoose.connect(process.env.MONGO_URI);
 
 // This is where all of our commands will be handled
 export default class CommandHandler {
@@ -26,7 +30,6 @@ export default class CommandHandler {
   private displayName: string | undefined;
   private userId: string | undefined;
   private localpart: string | undefined;
-  private verificationRooms = new Set();
 
   constructor(private client: MatrixClient) {}
 
@@ -64,7 +67,6 @@ export default class CommandHandler {
   }
 
   private async onMessage(roomId: string, ev: any) {
-    if (this.verificationRooms.has(roomId)) return;
     const event = new MessageEvent(ev);
     const userId = this.userId;
     if (!userId) return;
@@ -101,173 +103,211 @@ export default class CommandHandler {
     }
   }
 
-  private async onRoomEvent(mainRoomId: string, ev: any) {
+  private async onRoomEvent(roomId: string, ev: any) {
     if (ev.content.membership === 'leave') {
-      const roomMembersCount = (await this.client.getRoomMembers(mainRoomId)).length;
-      if (roomMembersCount <= 2) await this.client.leaveRoom(mainRoomId);
+      // leave room if user has left and bot is the only one left
+      const roomMembersCount = (await this.client.getRoomMembers(roomId)).length;
+      if (roomMembersCount <= 2) await this.client.leaveRoom(roomId);
+      const data = await verifyingData.findOne({
+        verificationRoomId: roomId
+      });
+      if (data) {
+        data.verificationRoomId = undefined;
+        await data.save();
+      }
       return;
-    }
-    if (this.verificationRooms.has(mainRoomId)) return;
-    const mainRoomEvent = new MembershipEvent(ev);
-    if (mainRoomEvent.type !== 'm.room.member') return;
-    if (mainRoomEvent.sender === this.userId) return;
-    if (mainRoomEvent.content.membership !== 'join') return;
-    if (!mainRoomEvent.sender) return;
-    // await this.client.dms.update();
-    // if (this.client.dms.isDm(mainRoomId)) return;
-
-    let verificationComplete = false;
-
-    this.client.on('room.message', async (roomId: string, ev: any) => {
-      if (verificationComplete) return;
-      if (roomId !== mainRoomId) return;
-      const event = new MessageEvent(ev);
-      if (event.sender === this.userId) return;
-      if (mainRoomEvent.sender !== event.sender) return;
-      const userId = this.userId;
-      if (!userId) return;
-
-      const permissionToRedact = await this.client.userHasPowerLevelForAction(
-        userId,
-        mainRoomId,
-        PowerLevelAction.RedactEvents
-      );
-      if (permissionToRedact)
-        await this.client.redactEvent(roomId, event.eventId, 'User has not yet completed verification');
-    });
-
-    const roomMembersCount = (await this.client.getRoomMembers(mainRoomId)).length;
-    if (roomMembersCount <= 2) return;
-
-    const permissionToSendMessage = await this.client.userHasPowerLevelFor(
-      mainRoomEvent.sender,
-      mainRoomId,
-      'm.room.message',
-      false
-    );
-    const powerLevelChange = await this.client.calculatePowerLevelChangeBoundsOn(mainRoomEvent.sender, mainRoomId);
-
-    const powerLevelsEvent = await this.client.getRoomStateEvent(mainRoomId, 'm.room.power_levels', undefined);
-    if (!powerLevelsEvent) return LogService.error('power-levels', 'Room has no power levels event...');
-
-    let requiredPower = 0;
-    if (Number.isFinite(powerLevelsEvent['events_default'])) requiredPower = powerLevelsEvent['events_default'];
-    if (Number.isFinite(powerLevelsEvent['events']?.['m.room.message']))
-      requiredPower = powerLevelsEvent['events']['m.room.message'];
-
-    if (powerLevelChange.canModify && permissionToSendMessage)
-      await this.client
-        .setUserPowerLevel(mainRoomEvent.sender, mainRoomId, requiredPower - 1)
-        .catch(e => LogService.error('power', e));
-
-    let mainRoomAlias = await this.client.getPublishedAlias(mainRoomId);
-    if (!mainRoomAlias)
-      mainRoomAlias = (await this.client.getRoomState(mainRoomId)).find(state => state.type == 'm.room.name')[
-        'content'
-      ]['name'];
-
-    const mainRoomPill = await MentionPill.forRoom(mainRoomId, this.client);
-
-    const verificationRoomId = await this.client
-      .createRoom({
-        name: `Verification | ${mainRoomAlias}`,
-        is_direct: true,
-        power_level_content_override: {
-          invite: 100
-        }
-      })
-      .catch(e => {
-        LogService.error('verification-room', e);
-      });
-    // const verificationRoomId = await this.client.dms.getOrCreateDm(mainRoomEvent.sender);
-    if (!verificationRoomId)
-      return LogService.error('verification-room', 'A verification room was not created and so it does not exist.');
-
-    const inviteUserSuccess = await this.client.inviteUser(mainRoomEvent.sender, verificationRoomId).catch(async e => {
-      LogService.error('unable-to-invite-user-to-room', e);
-      await this.client.leaveRoom(verificationRoomId);
-      return false;
-    });
-    if (inviteUserSuccess === false) return;
-
-    this.verificationRooms.add(verificationRoomId);
-
-    this.client.sendHtmlNotice(verificationRoomId, '<h3>Generating Captcha...</h3>');
-
-    this.client.on('room.event', async (roomId: string, ev: any) => {
-      if (roomId !== verificationRoomId) return;
+    } else if (ev.content.membership === 'join') {
       const event = new MembershipEvent(ev);
-      if (event.type !== 'm.room.member') return;
-      if (event.sender === this.userId) return;
-      if (!event.sender) return;
-      if (event.sender !== mainRoomEvent.sender) return;
-      if (event.content.membership !== 'join') return;
+      if (event.sender !== this.userId) {
+        const data = await verifyingData.findOne({
+          verificationRoomId: roomId
+        });
+        if (data?.verificationRoomId) {
+          // user has joined verification room, create captcha
+          const captchaWidth = 300;
+          const captchaHeight = 100;
+          const captchaChars = 7;
 
-      const captchaWidth = 300;
-      const captchaHeight = 100;
-      const captchaChars = 7;
+          const localCaptcha = svgCaptcha.create({
+            size: captchaChars,
+            background: '#d5fcc5',
+            width: captchaWidth,
+            height: captchaHeight,
+            noise: 2
+          });
+          const captchaImageBuffer = await svg2png(Buffer.from(localCaptcha.data));
+          const captchaSolution = localCaptcha.text;
+          const captchaImageURL = await this.client.uploadContent(captchaImageBuffer, 'image/png');
 
-      const localCaptcha = svgCaptcha.create({
-        size: captchaChars,
-        background: '#d5fcc5',
-        width: captchaWidth,
-        height: captchaHeight,
-        noise: 2
+          const mainRoomPill = await MentionPill.forRoom(data.mainRoomId, this.client);
+
+          await this.client.sendHtmlNotice(
+            data.verificationRoomId,
+            `<h3>Please solve the following captcha to gain access to ${mainRoomPill.html}.</h3>`
+          );
+
+          const captchaImageJSON = {
+            info: {
+              mimetype: 'image/png',
+              size: 0,
+              w: captchaWidth,
+              h: captchaHeight
+              // 'xyz.amorgan.blurhash': 'L5Kn#htRo}s;xakCtQMy_Mt6RPRj'
+            },
+            msgtype: 'm.image',
+            body: 'image.png',
+            url: captchaImageURL
+          };
+
+          await this.client.sendRawEvent(data.verificationRoomId, 'm.room.message', captchaImageJSON);
+
+          data.captchaAnswer = captchaSolution;
+          await data.save();
+        } else if (!data) {
+          // user has joined main room, create verification room
+          const preExistingData = await verifyingData.findOne({
+            userId: event.sender,
+            mainRoomId: roomId
+          });
+          if (preExistingData) {
+            if (preExistingData?.verificationRoomId) {
+              const joinedRooms = await this.client.getJoinedRooms();
+              if (joinedRooms.includes(preExistingData.verificationRoomId))
+                await this.client.leaveRoom(preExistingData.verificationRoomId);
+            }
+            preExistingData.deleteOne();
+          }
+          const data = new verifyingData({
+            userId: event.sender,
+            mainRoomId: roomId
+          });
+          await data.save();
+
+          const permissionToSendMessage = await this.client.userHasPowerLevelFor(
+            event.sender,
+            roomId,
+            'm.room.message',
+            false
+          );
+          const powerLevelChange = await this.client.calculatePowerLevelChangeBoundsOn(event.sender, roomId);
+
+          const powerLevelsEvent = await this.client.getRoomStateEvent(roomId, 'm.room.power_levels', undefined);
+          if (!powerLevelsEvent) return LogService.error('power-levels', 'Room has no power levels event...');
+
+          let requiredPower = 0;
+          if (Number.isFinite(powerLevelsEvent['events_default'])) requiredPower = powerLevelsEvent['events_default'];
+          if (Number.isFinite(powerLevelsEvent['events']?.['m.room.message']))
+            requiredPower = powerLevelsEvent['events']['m.room.message'];
+
+          if (powerLevelChange.canModify && permissionToSendMessage)
+            await this.client
+              .setUserPowerLevel(event.sender, roomId, requiredPower - 1)
+              .catch(e => LogService.error('power', e));
+
+          let mainRoomAlias = await this.client.getPublishedAlias(roomId);
+          if (!mainRoomAlias)
+            mainRoomAlias = (await this.client.getRoomState(roomId)).find(state => state.type == 'm.room.name')[
+              'content'
+            ]['name'];
+
+          const verificationRoomId = await this.client
+            .createRoom({
+              name: `Verification | ${mainRoomAlias}`,
+              is_direct: true,
+              power_level_content_override: {
+                invite: 100
+              }
+            })
+            .catch(e => {
+              LogService.error('verification-room', e);
+            });
+          // const verificationRoomId = await this.client.dms.getOrCreateDm(mainRoomEvent.sender);
+          if (!verificationRoomId)
+            return LogService.error(
+              'verification-room',
+              'A verification room was not created and so it does not exist.'
+            );
+
+          const inviteUserSuccess = await this.client.inviteUser(event.sender, verificationRoomId).catch(async e => {
+            LogService.error('unable-to-invite-user-to-room', e);
+            await this.client.leaveRoom(verificationRoomId);
+            return false;
+          });
+          if (inviteUserSuccess === false) return;
+
+          data.verificationRoomId = verificationRoomId;
+          await data.save();
+
+          return this.client.sendHtmlNotice(verificationRoomId, '<h3>Generating Captcha...</h3>');
+        }
+      }
+    }
+
+    if (ev.type === 'm.room.message' && ev.content.body && ev.sender !== this.userId) {
+      const event = new MessageEvent(ev);
+      const data = await verifyingData.findOne({
+        userId: event.sender,
+        verificationRoomId: roomId
       });
-      const captchaImageBuffer = await svg2png(Buffer.from(localCaptcha.data));
-      const captchaSolution = localCaptcha.text;
-      const captchaImageURL = await this.client.uploadContent(captchaImageBuffer, 'image/png');
-
-      await this.client.sendHtmlNotice(
-        verificationRoomId,
-        `<h3>Please solve the following captcha to gain access to ${mainRoomPill.html}.</h3>`
-      );
-
-      const captchaImageJSON = {
-        info: {
-          mimetype: 'image/png',
-          size: 0,
-          w: captchaWidth,
-          h: captchaHeight
-          // 'xyz.amorgan.blurhash': 'L5Kn#htRo}s;xakCtQMy_Mt6RPRj'
-        },
-        msgtype: 'm.image',
-        body: 'image.png',
-        url: captchaImageURL
-      };
-
-      await this.client.sendRawEvent(verificationRoomId, 'm.room.message', captchaImageJSON);
-
-      this.client.on('room.message', async (roomId: string, ev: any) => {
-        if (roomId !== verificationRoomId) return;
-        const event = new MessageEvent(ev);
-        if (event.sender === this.userId) return;
-        if (event.sender !== mainRoomEvent.sender) return;
+      if (data?.captchaAnswer) {
+        // user has attempted captcha
         await this.client.sendReadReceipt(roomId, event.eventId);
-        if (event.content.body !== captchaSolution) return;
+        if (data.captchaAnswer === event.content.body) {
+          const mainRoomPill = await MentionPill.forRoom(data.mainRoomId, this.client);
+          const powerLevelChange = await this.client.calculatePowerLevelChangeBoundsOn(data.userId, data.mainRoomId);
+          const powerLevelsEvent = await this.client.getRoomStateEvent(
+            data.mainRoomId,
+            'm.room.power_levels',
+            undefined
+          );
+          if (!powerLevelsEvent) return LogService.error('power-levels', 'Room has no power levels event...');
+          let requiredPower = 0;
+          if (Number.isFinite(powerLevelsEvent['events_default'])) requiredPower = powerLevelsEvent['events_default'];
+          if (Number.isFinite(powerLevelsEvent['events']?.['m.room.message']))
+            requiredPower = powerLevelsEvent['events']['m.room.message'];
+          await this.client.sendHtmlNotice(
+            roomId,
+            `<h3>Verification Complete</h3>You have been given access to ${mainRoomPill.html}. You may now leave this room.`
+          );
 
-        await this.client.sendHtmlNotice(
-          roomId,
-          `<h3>Verification Complete</h3>You have been given access to ${mainRoomPill.html}. You may now leave this room.`
-        );
+          const permissionToSendMessage = await this.client.userHasPowerLevelFor(
+            data.userId,
+            data.mainRoomId,
+            'm.room.message',
+            false
+          );
 
-        const permissionToSendMessage = await this.client.userHasPowerLevelFor(
-          mainRoomEvent.sender,
-          mainRoomId,
-          'm.room.message',
-          false
-        );
+          // Add power level if statement check
+          if (powerLevelChange.canModify && !permissionToSendMessage)
+            await this.client
+              .setUserPowerLevel(event.sender, data.mainRoomId, requiredPower)
+              .catch(e => LogService.error('power', e));
 
-        // Add power level if statement check
-        if (powerLevelChange.canModify && !permissionToSendMessage)
-          await this.client
-            .setUserPowerLevel(event.sender, mainRoomId, requiredPower)
-            .catch(e => LogService.error('power', e));
+          await this.client.leaveRoom(roomId, 'Verification Complete');
+          await data.deleteOne();
+          return;
+        }
+      }
 
-        await this.client.leaveRoom(roomId, 'Verification Complete');
-        verificationComplete = true;
-        this.verificationRooms.delete(verificationRoomId);
-      });
-    });
+      if (!data) {
+        const mainRoomData = await verifyingData.findOne({
+          userId: event.sender,
+          mainRoomId: roomId
+        });
+        if (mainRoomData) {
+          // user is attempting to talk in main room but has not verified yet
+          const userId = this.userId;
+          if (!userId) return;
+          const permissionToRedact = await this.client.userHasPowerLevelForAction(
+            userId,
+            mainRoomData.mainRoomId,
+            PowerLevelAction.RedactEvents
+          );
+          if (permissionToRedact)
+            await this.client.redactEvent(roomId, event.eventId, 'User has not yet completed verification');
+          return;
+        }
+      }
+    }
   }
 }

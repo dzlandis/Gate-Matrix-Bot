@@ -4,6 +4,7 @@ import './utils/setup.js';
 declare module '@skyra/env-utilities' {
   interface Env {
     ACCESS_TOKEN: string;
+    MONGO_URI: string;
   }
 }
 
