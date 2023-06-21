@@ -8,7 +8,10 @@
   "license": "GNU GPL",
   "dependencies": {
     "@skyra/env-utilities": "^1.2.1",
-    "matrix-bot-sdk": "^0.6.6"
+    "@types/svg2png": "^4.1.2",
+    "matrix-bot-sdk": "^0.6.6",
+    "svg-captcha": "^1.4.0",
+    "svg2png": "^4.1.1"
   },
   "devDependencies": {
     "@sapphire/ts-config": "^4.0.0",

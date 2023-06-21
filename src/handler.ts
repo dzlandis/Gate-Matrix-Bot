@@ -4,9 +4,12 @@ import {
   MembershipEvent,
   MentionPill,
   MessageEvent,
+  PowerLevelAction,
   RoomEvent,
   UserID
 } from 'matrix-bot-sdk';
+import svgCaptcha from 'svg-captcha';
+import svg2png from 'svg2png';
 import { runHelpCommand } from './commands/help.js';
 import { runPingCommand } from './commands/ping.js';
 import { runSpaceCommand } from './commands/space.js';
@@ -116,8 +119,16 @@ export default class CommandHandler {
       const event = new MessageEvent(ev);
       if (event.sender === this.userId) return;
       if (mainRoomEvent.sender !== event.sender) return;
+      const userId = this.userId;
+      if (!userId) return;
 
-      await this.client.redactEvent(roomId, event.eventId, 'User has not yet completed verification');
+      const permissionToRedact = await this.client.userHasPowerLevelForAction(
+        userId,
+        mainRoomId,
+        PowerLevelAction.RedactEvents
+      );
+      if (permissionToRedact)
+        await this.client.redactEvent(roomId, event.eventId, 'User has not yet completed verification');
     });
 
     const roomMembersCount = (await this.client.getRoomMembers(mainRoomId)).length;
@@ -179,23 +190,15 @@ export default class CommandHandler {
       const captchaHeight = 100;
       const captchaChars = 7;
 
-      const captchaFetch = await fetch(
-        process.env.CAPTCHA_API + `?width=${captchaWidth}&height=${captchaHeight}&chars=${captchaChars}`,
-        {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'image/png',
-            'x-captcha-solution': ''
-          }
-        }
-      );
-      if (!captchaFetch.ok) return LogService.error('captcha', 'Captcha API Fetch Failed');
-      if (!captchaFetch.body) return LogService.error('catpcha', 'No image returned in body of Captcha API');
-      const captchaImageArrayBuffer = await captchaFetch.arrayBuffer();
-      const captchaImageBuffer = Buffer.from(captchaImageArrayBuffer);
-      const captchaSolution = captchaFetch.headers.get('X-Captcha-Solution');
-      if (!captchaSolution) return LogService.error('captcha', 'Captcha API did not return a solution to the captcha');
-
+      const localCaptcha = svgCaptcha.create({
+        size: captchaChars,
+        background: '#d5fcc5',
+        width: captchaWidth,
+        height: captchaHeight,
+        noise: 2
+      });
+      const captchaImageBuffer = await svg2png(Buffer.from(localCaptcha.data));
+      const captchaSolution = localCaptcha.text;
       const captchaImageURL = await this.client.uploadContent(captchaImageBuffer, 'image/png');
 
       await this.client.sendHtmlNotice(
@@ -206,7 +209,7 @@ export default class CommandHandler {
       const captchaImageJSON = {
         info: {
           mimetype: 'image/png',
-          size: captchaImageArrayBuffer.byteLength,
+          size: 0,
           w: captchaWidth,
           h: captchaHeight
           // 'xyz.amorgan.blurhash': 'L5Kn#htRo}s;xakCtQMy_Mt6RPRj'
@@ -223,6 +226,7 @@ export default class CommandHandler {
         const event = new MessageEvent(ev);
         if (event.sender === this.userId) return;
         if (event.sender !== mainRoomEvent.sender) return;
+        await this.client.sendReadReceipt(roomId, event.eventId);
         if (event.content.body !== captchaSolution) return;
 
         await this.client.sendHtmlNotice(

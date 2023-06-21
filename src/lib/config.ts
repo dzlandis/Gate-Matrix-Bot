@@ -4,7 +4,6 @@ import './utils/setup.js';
 declare module '@skyra/env-utilities' {
   interface Env {
     ACCESS_TOKEN: string;
-    CAPTCHA_API: string;
   }
 }
 
