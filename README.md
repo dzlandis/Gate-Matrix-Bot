@@ -2,7 +2,7 @@
 
 Gate Bot is a [Matrix](https://matrix.org) bot that enables Matrix room owners to establish a gate between new users and their community. Upon joining, users are unable to send messages in the room and are instead directed to solve a captcha in a separate direct message created by the bot. Once they have successfully solved the captcha, they are granted permission to communicate in the room and are considered verified. Gate Bot is an excellent tool for mitigating spam bots, as it adds an extra step for potential attackers before they can spam or raid a room.
 
-![Gate Bot Demo (Gate Bot verifying a user via captcha)](https://i.imgur.com/omcxXGW.gif)
+![Gate Bot Demo (Gate Bot verifying a user via captcha)](https://github.com/dzlandis/Gate-Matrix-Bot/assets/49926644/3e735a63-a23f-44dd-a523-52d9b615d4c2)
 
 ## Inviting 
 
