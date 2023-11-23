@@ -77,7 +77,7 @@ export default class CommandHandler {
 
     // Ensure that the event is a command before going on. We allow people to ping
     // the bot as well as using our COMMAND_PREFIX.
-    const prefixes = [COMMAND_PREFIX, `${this.localpart}:`, `${this.displayName}:`, `${userId}:`];
+    const prefixes = [COMMAND_PREFIX, `${this.localpart}:`, `${this.displayName}:`, `${userId}:`, userId];
     const prefixUsed = prefixes.find(p => event.textBody.startsWith(p));
 
     if (!prefixUsed) return; // Not a command (as far as we're concerned)
